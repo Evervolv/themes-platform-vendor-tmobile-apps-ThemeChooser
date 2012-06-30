@@ -5,10 +5,12 @@ import com.tmobile.themes.provider.Themes.ThemeColumns;
 
 import android.app.Activity;
 import android.app.ActivityManager;
+import android.app.AlertDialog;
 import android.app.Dialog;
 import android.app.ProgressDialog;
 import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.IntentFilter.MalformedMimeTypeException;
@@ -18,7 +20,11 @@ import android.content.res.Configuration;
 import android.content.res.CustomTheme;
 import android.content.res.Resources;
 import android.os.Handler;
+import android.os.IBinder;
+import android.os.IPowerManager;
 import android.os.Message;
+import android.os.RemoteException;
+import android.os.ServiceManager;
 import android.util.Log;
 
 /**
@@ -33,6 +39,9 @@ import android.util.Log;
 public class ChangeThemeHelper {
     private final Activity mContext;
     private final int mDialogId;
+    private static final int DIALOG_HOT_REBOOT = 3;
+    private final int mDialogIdHotReboot;
+    private AlertDialog mDialogHotReboot;
 
     /**
      * Tracked to trap theme change configuration events. Note that this could
@@ -59,6 +68,7 @@ public class ChangeThemeHelper {
     public ChangeThemeHelper(Activity context, int dialogId) {
         mContext = context;
         mDialogId = dialogId;
+        mDialogIdHotReboot = DIALOG_HOT_REBOOT;
     }
 
     public void dispatchOnCreate() {
@@ -77,6 +87,7 @@ public class ChangeThemeHelper {
          * @param newConfig
          * @return boolean finishing - true if finish() is scheduled
          */
+        mContext.showDialog(mDialogIdHotReboot);
         boolean finishing = false;
         CustomTheme newTheme = newConfig.customTheme;
         if (newTheme != null &&
@@ -152,8 +163,13 @@ public class ChangeThemeHelper {
                             FINISH_DELAY);
                     break;
                 case MSG_FINISH_EXECUTE:
-                    handleThemeChangeSwitch((String)msg.obj);
-                    break;
+                    if (mDialogHotReboot != null && mDialogHotReboot.isShowing()) {
+                        mHandler.scheduleTimeout();
+                        break;
+                    } else {
+                        handleThemeChangeSwitch((String)msg.obj);
+                        break;
+                    }
             }
         }
 
@@ -213,6 +229,30 @@ public class ChangeThemeHelper {
             dialog.setCancelable(false);
             dialog.setIndeterminate(true);
             return dialog;
+        } else if (id == mDialogIdHotReboot) {
+            AlertDialog.Builder builder;
+            builder = new AlertDialog.Builder(mContext);
+            builder.setTitle(getThemeChooserResources(mContext).getString(
+                    R.string.dialog_hot_reboot_title));
+            builder.setMessage(getThemeChooserResources(mContext).getString(
+                    R.string.dialog_hot_reboot_msg));
+            builder.setCancelable(false);
+            builder.setPositiveButton(android.R.string.ok, new DialogInterface.OnClickListener() {
+                public void onClick(DialogInterface dialog, int which) {
+                    try {
+                        IBinder b = ServiceManager.getService(Context.POWER_SERVICE);
+                        IPowerManager pm = IPowerManager.Stub.asInterface(b);
+                        pm.crash("Crashed by Hot Reboot");
+                    } catch (RemoteException e) {
+                        // Kill the current Home process, they tend to be evil and cache drawable references in all apps
+                        final ActivityManager am = (ActivityManager)mContext.getSystemService(Context.ACTIVITY_SERVICE);
+                        am.forceStopPackage("com.android.launcher");
+                        mHandler.scheduleFinish("Theme change 'complete', closing!");
+                    }
+                }
+            });
+            mDialogHotReboot = builder.create();
+            return mDialogHotReboot;
         } else {
             return null;
         }
